@@ -105,6 +105,17 @@
   }
   #permBox.hidden { display: none; }
   .small { font-size: 11.5px; color: #8b8578 !important; }
+
+  #toast {
+    position: fixed; left: 50%; bottom: 84px; transform: translateX(-50%) translateY(10px);
+    background: rgba(20,22,26,.88); color: #f2eadd; font-size: 13px;
+    padding: 10px 16px; border-radius: 12px; border: 1px solid rgba(255,255,255,.18);
+    z-index: 15; max-width: 86%; text-align: center; line-height: 1.6;
+    backdrop-filter: blur(6px); opacity: 0; pointer-events: none;
+    transition: opacity .25s, transform .25s;
+  }
+  #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+  .iconbtn.busy { opacity: .5; }
 </style>
 </head>
 <body>
@@ -124,12 +135,14 @@
 <div id="topbar">
   <div class="title">モアレビューアー</div>
   <div class="topbtns">
+    <button class="iconbtn" id="detectBtn" title="自動判定">🔍</button>
     <button class="iconbtn" id="flipBtn" title="カメラ切替">🔄</button>
     <button class="iconbtn" id="gearBtn" title="設定">⚙️</button>
   </div>
 </div>
 
-<div id="hint">画面を指で左右にスライドすると絵が動きます。下の⚙️で縞の間隔を絵本に合わせて調整してください。</div>
+<div id="hint">1本指で左右にスライド=位相移動、2本指でひねる=回転。🔍で縞の間隔・角度を自動判定できます。</div>
+<div id="toast"></div>
 
 <div id="playbar">
   <button id="pauseBtn">⏸ 一時停止</button>
@@ -166,6 +179,7 @@
     </div>
   </div>
   <div class="row btnrow">
+    <div class="chip" id="detectBtn2">🔍 自動判定</div>
     <div class="chip" id="halfShiftBtn">半ピッチ反転</div>
     <div class="chip" id="resetBtn">リセット</div>
     <div class="chip" id="closePanelBtn">閉じる</div>
@@ -189,6 +203,9 @@
   const playbar = document.getElementById('playbar');
   const resetBtn = document.getElementById('resetBtn');
   const halfShiftBtn = document.getElementById('halfShiftBtn');
+  const detectBtn = document.getElementById('detectBtn');
+  const detectBtn2 = document.getElementById('detectBtn2');
+  const toast = document.getElementById('toast');
 
   const state = {
     pitch: 16,
@@ -199,8 +216,17 @@
     color: '#000000',
     paused: false,
     facingMode: 'environment',
-    stream: null
+    stream: null,
+    lastCoverScale: 1   // 直近のカバー描画スケール(video px → canvas device px)
   };
+
+  let toastTimer = null;
+  function showToast(msg, ms) {
+    toast.textContent = msg;
+    toast.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => toast.classList.remove('show'), ms || 3200);
+  }
 
   const sliders = {
     pitch: document.getElementById('pitch'),
@@ -279,20 +305,69 @@
     pauseBtn.textContent = state.paused ? '▶ 再生' : '⏸ 一時停止';
   });
 
-  // 画面を指でドラッグすると位相が動く(実物のシートを滑らせる感覚)
-  let dragging = false, lastX = 0;
+  // 指ジェスチャー: 1本指ドラッグ=位相スライド(実物のシートを滑らせる感覚)
+  //              2本指ひねり=回転(モアレ拡大鏡のようにくるくる回す感覚)
   const stage = document.getElementById('stage');
-  stage.addEventListener('pointerdown', e => { dragging = true; lastX = e.clientX; });
-  window.addEventListener('pointermove', e => {
-    if (!dragging) return;
-    const dx = e.clientX - lastX;
-    lastX = e.clientX;
-    state.phase = ((state.phase + dx) % state.pitch + state.pitch) % state.pitch;
-    sliders.phase.value = state.phase;
-    updateLabels();
-    hint.style.opacity = '0';
+  const pointers = new Map();
+  let phaseDragLastX = 0;
+  let twistLastAngle = null;
+
+  function angleBetween(p1, p2) {
+    return Math.atan2(p2.y - p1.y, p2.x - p1.x) * 180 / Math.PI;
+  }
+
+  stage.addEventListener('pointerdown', e => {
+    pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (pointers.size === 1) {
+      phaseDragLastX = e.clientX;
+    } else if (pointers.size === 2) {
+      const pts = Array.from(pointers.values());
+      twistLastAngle = angleBetween(pts[0], pts[1]);
+    }
   });
-  window.addEventListener('pointerup', () => dragging = false);
+
+  window.addEventListener('pointermove', e => {
+    if (!pointers.has(e.pointerId)) return;
+    pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
+    if (pointers.size === 1) {
+      const dx = e.clientX - phaseDragLastX;
+      phaseDragLastX = e.clientX;
+      state.phase = ((state.phase + dx) % state.pitch + state.pitch) % state.pitch;
+      sliders.phase.value = state.phase;
+      updateLabels();
+      hint.style.opacity = '0';
+    } else if (pointers.size === 2) {
+      const pts = Array.from(pointers.values());
+      const ang = angleBetween(pts[0], pts[1]);
+      if (twistLastAngle !== null) {
+        let delta = ang - twistLastAngle;
+        while (delta > 180) delta -= 360;
+        while (delta < -180) delta += 360;
+        state.angle = ((state.angle + delta) % 180 + 180) % 180;
+        sliders.angle.value = state.angle;
+        updateLabels();
+        hint.style.opacity = '0';
+      }
+      twistLastAngle = ang;
+    }
+  });
+
+  function endPointer(e) {
+    pointers.delete(e.pointerId);
+    if (pointers.size === 1) {
+      const remaining = Array.from(pointers.values())[0];
+      phaseDragLastX = remaining.x;
+      twistLastAngle = null;
+    } else if (pointers.size >= 2) {
+      const pts = Array.from(pointers.values());
+      twistLastAngle = angleBetween(pts[0], pts[1]);
+    } else {
+      twistLastAngle = null;
+    }
+  }
+  window.addEventListener('pointerup', endPointer);
+  window.addEventListener('pointercancel', endPointer);
 
   // カメラ起動
   async function startCamera(facingMode) {
@@ -343,10 +418,119 @@
     if (!vw || !vh) return;
     const cw = canvas.width, ch = canvas.height;
     const scale = Math.max(cw / vw, ch / vh);
+    state.lastCoverScale = scale;
     const dw = vw * scale, dh = vh * scale;
     const dx = (cw - dw) / 2, dy = (ch - dh) / 2;
     ctx.drawImage(video, dx, dy, dw, dh);
   }
+
+  // ===== 縞の自動判定(周期解析) =====
+  // 画面中央付近をクロップし、様々な角度に逆回転させて明るさの
+  // プロファイルを取り、自己相関が最も強くなる角度・周期を探す。
+  function analyzeProfile(octx, aSize, minPitch, maxPitch) {
+    const margin = Math.floor(aSize * 0.22);
+    const w = aSize - margin * 2, h = aSize - margin * 2;
+    if (w < 10 || h < 10) return null;
+    const img = octx.getImageData(margin, margin, w, h).data;
+    const profile = new Float32Array(w);
+    for (let x = 0; x < w; x++) {
+      let sum = 0;
+      for (let y = 0; y < h; y++) {
+        const idx = (y * w + x) * 4;
+        sum += img[idx] * 0.299 + img[idx + 1] * 0.587 + img[idx + 2] * 0.114;
+      }
+      profile[x] = sum / h;
+    }
+    let mean = 0;
+    for (let x = 0; x < w; x++) mean += profile[x];
+    mean /= w;
+    for (let x = 0; x < w; x++) profile[x] -= mean;
+    let var0 = 0;
+    for (let x = 0; x < w; x++) var0 += profile[x] * profile[x];
+    if (var0 < w * 4) return null; // ほぼ変化がない = 無地または判定不能
+
+    let bestLag = -1, bestVal = -Infinity;
+    const maxLag = Math.min(maxPitch, Math.floor(w / 2) - 1);
+    for (let lag = minPitch; lag <= maxLag; lag++) {
+      let s = 0;
+      const n = w - lag;
+      for (let x = 0; x < n; x++) s += profile[x] * profile[x + lag];
+      s /= n;
+      const norm = s / (var0 / w);
+      if (norm > bestVal) { bestVal = norm; bestLag = lag; }
+    }
+    if (bestLag < 0) return null;
+    return { pitch: bestLag, score: bestVal };
+  }
+
+  function detectPattern() {
+    if (!video.videoWidth) {
+      showToast('カメラがまだ準備できていません');
+      return;
+    }
+    const vw = video.videoWidth, vh = video.videoHeight;
+    const size = Math.min(vw, vh) * 0.55;
+    const sx = (vw - size) / 2, sy = (vh - size) / 2;
+    const aSize = 200;
+    const off = document.createElement('canvas');
+    off.width = aSize; off.height = aSize;
+    const octx = off.getContext('2d', { willReadFrequently: true });
+
+    const minPitchA = 3, maxPitchA = 55;
+    let best = { score: -Infinity, angleDeg: 0, pitchA: 10 };
+
+    function testAngle(deg) {
+      octx.save();
+      octx.clearRect(0, 0, aSize, aSize);
+      octx.translate(aSize / 2, aSize / 2);
+      octx.rotate(-deg * Math.PI / 180);
+      octx.drawImage(video, sx, sy, size, size, -aSize / 2, -aSize / 2, aSize, aSize);
+      octx.restore();
+      const result = analyzeProfile(octx, aSize, minPitchA, maxPitchA);
+      if (result && result.score > best.score) {
+        best = { score: result.score, angleDeg: deg, pitchA: result.pitch };
+      }
+    }
+
+    for (let deg = 0; deg < 180; deg += 3) testAngle(deg);
+    const coarseDeg = best.angleDeg;
+    for (let deg = coarseDeg - 4; deg <= coarseDeg + 4; deg += 0.5) testAngle(deg);
+
+    if (best.score < 0.05) {
+      showToast('はっきりした縞を検出できませんでした。絵本を画面いっぱいに大きく、まっすぐ映してもう一度お試しください。', 4200);
+      return;
+    }
+
+    const k = aSize / size;
+    const pitchVideo = best.pitchA / k;
+    const pitchCanvasDevice = pitchVideo * (state.lastCoverScale || 1);
+    const dprFactor = Math.min(window.devicePixelRatio || 1, 2);
+    let newPitch = Math.round(pitchCanvasDevice / dprFactor);
+    newPitch = Math.max(3, Math.min(60, newPitch));
+
+    let newAngle = Math.round(((best.angleDeg % 180) + 180) % 180);
+
+    state.pitch = newPitch;
+    state.angle = newAngle;
+    sliders.pitch.value = newPitch;
+    sliders.angle.value = newAngle;
+    syncPhaseSliderRange();
+    updateLabels();
+    panel.classList.add('open');
+
+    const confidence = best.score > 0.35 ? 'かなり自信あり' : (best.score > 0.15 ? 'まあまあ' : '弱め・目安程度');
+    showToast(`推定結果 → 間隔 ${newPitch}px / 角度 ${newAngle}°(確信度: ${confidence})。手動でも微調整してください。`, 4500);
+  }
+
+  async function runDetect(btn) {
+    btn.classList.add('busy');
+    // UI描画を1フレーム待ってから重い処理へ
+    await new Promise(r => requestAnimationFrame(r));
+    try { detectPattern(); }
+    finally { btn.classList.remove('busy'); }
+  }
+  detectBtn.addEventListener('click', () => runDetect(detectBtn));
+  detectBtn2.addEventListener('click', () => runDetect(detectBtn2));
 
   function drawStripes() {
     const w = canvas.width, h = canvas.height;
@@ -385,4 +569,3 @@
 </script>
 </body>
 </html>
-
