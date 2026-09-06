@@ -1,1 +1,388 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>モアレビューアー</title>
+<style>
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body {
+    margin: 0; padding: 0; width: 100%; height: 100%;
+    background: #0b0d10; overflow: hidden;
+    font-family: -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Yu Gothic", sans-serif;
+    touch-action: none;
+    overscroll-behavior: none;
+  }
+  #stage { position: fixed; inset: 0; touch-action: none; }
+  video { display: none; }
+  canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+
+  #topbar {
+    position: fixed; top: 0; left: 0; right: 0;
+    padding: max(10px, env(safe-area-inset-top)) 12px 10px;
+    display: flex; align-items: center; justify-content: space-between;
+    background: linear-gradient(to bottom, rgba(0,0,0,.55), rgba(0,0,0,0));
+    z-index: 10; pointer-events: none;
+  }
+  #topbar * { pointer-events: auto; }
+  .title { color: #f2eadd; font-size: 15px; font-weight: 600; letter-spacing: .04em; }
+  .iconbtn {
+    width: 40px; height: 40px; border-radius: 50%;
+    background: rgba(20,22,26,.55); border: 1px solid rgba(255,255,255,.18);
+    color: #f2eadd; font-size: 18px; display: flex; align-items: center; justify-content: center;
+    backdrop-filter: blur(6px);
+  }
+  .iconbtn:active { background: rgba(255,255,255,.25); }
+  .topbtns { display: flex; gap: 8px; }
+
+  #hint {
+    position: fixed; left: 50%; top: 64px; transform: translateX(-50%);
+    background: rgba(20,22,26,.72); color: #f2eadd; font-size: 12.5px;
+    padding: 8px 14px; border-radius: 999px; border: 1px solid rgba(255,255,255,.15);
+    z-index: 10; max-width: 88%; text-align: center; line-height: 1.5;
+    backdrop-filter: blur(6px); transition: opacity .4s;
+  }
+
+  #panel {
+    position: fixed; left: 0; right: 0; bottom: 0;
+    background: rgba(15,16,19,.86); backdrop-filter: blur(10px);
+    border-top: 1px solid rgba(255,255,255,.12);
+    padding: 14px 16px max(14px, env(safe-area-inset-bottom));
+    transform: translateY(100%); transition: transform .28s ease;
+    z-index: 10; max-height: 62vh; overflow-y: auto;
+  }
+  #panel.open { transform: translateY(0); }
+  .row { margin-bottom: 14px; }
+  .row:last-child { margin-bottom: 0; }
+  .row label {
+    display: flex; justify-content: space-between; align-items: center;
+    color: #cfc7b8; font-size: 12.5px; margin-bottom: 6px; letter-spacing: .02em;
+  }
+  .row label span.val { color: #d9b877; font-variant-numeric: tabular-nums; }
+  input[type=range] {
+    -webkit-appearance: none; width: 100%; height: 30px; background: transparent;
+  }
+  input[type=range]::-webkit-slider-runnable-track {
+    height: 4px; background: rgba(255,255,255,.18); border-radius: 2px;
+  }
+  input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance: none; margin-top: -9px; width: 22px; height: 22px; border-radius: 50%;
+    background: #d9b877; border: 2px solid #0b0d10;
+  }
+  .btnrow { display: flex; gap: 8px; flex-wrap: wrap; }
+  .chip {
+    flex: 1; min-width: 72px; text-align: center; padding: 9px 6px;
+    border-radius: 10px; background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.14);
+    color: #f2eadd; font-size: 12.5px;
+  }
+  .chip.active { background: #d9b877; color: #1a1508; border-color: #d9b877; font-weight: 600; }
+  .colorrow { display: flex; gap: 10px; }
+  .swatch { width: 30px; height: 30px; border-radius: 50%; border: 2px solid rgba(255,255,255,.25); }
+  .swatch.active { border-color: #d9b877; box-shadow: 0 0 0 2px rgba(217,184,119,.4); }
+
+  #playbar {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 9;
+    display: flex; justify-content: center; padding-bottom: max(14px, env(safe-area-inset-bottom));
+    pointer-events: none;
+  }
+  #playbar.hasPanel { display: none; }
+  #pauseBtn {
+    pointer-events: auto;
+    background: rgba(20,22,26,.6); border: 1px solid rgba(255,255,255,.2); color: #f2eadd;
+    padding: 10px 22px; border-radius: 999px; font-size: 13px; backdrop-filter: blur(6px);
+  }
+
+  #permBox {
+    position: fixed; inset: 0; z-index: 20; background: #0b0d10;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    color: #f2eadd; text-align: center; padding: 24px; gap: 16px;
+  }
+  #permBox h1 { font-size: 17px; margin: 0; }
+  #permBox p { font-size: 13px; color: #cfc7b8; line-height: 1.7; margin: 0; max-width: 320px; }
+  #permBox button {
+    background: #d9b877; color: #1a1508; border: none; padding: 12px 28px;
+    border-radius: 999px; font-size: 14px; font-weight: 700;
+  }
+  #permBox.hidden { display: none; }
+  .small { font-size: 11.5px; color: #8b8578 !important; }
+</style>
+</head>
+<body>
+
+<div id="permBox">
+  <h1>📷 モアレビューアー</h1>
+  <p>カメラを絵本のページ全体に向けると、縞模様が重なって隠れた絵が浮かび上がります。カメラへのアクセスを許可してください。</p>
+  <button id="startBtn">カメラを起動</button>
+  <p class="small" id="permMsg"></p>
+</div>
+
+<div id="stage">
+  <video id="video" playsinline muted autoplay></video>
+  <canvas id="canvas"></canvas>
+</div>
+
+<div id="topbar">
+  <div class="title">モアレビューアー</div>
+  <div class="topbtns">
+    <button class="iconbtn" id="flipBtn" title="カメラ切替">🔄</button>
+    <button class="iconbtn" id="gearBtn" title="設定">⚙️</button>
+  </div>
+</div>
+
+<div id="hint">画面を指で左右にスライドすると絵が動きます。下の⚙️で縞の間隔を絵本に合わせて調整してください。</div>
+
+<div id="playbar">
+  <button id="pauseBtn">⏸ 一時停止</button>
+</div>
+
+<div id="panel">
+  <div class="row">
+    <label>線の間隔(ピッチ) <span class="val" id="pitchVal">16px</span></label>
+    <input type="range" id="pitch" min="3" max="60" step="1" value="16">
+  </div>
+  <div class="row">
+    <label>線の太さ比率 <span class="val" id="dutyVal">50%</span></label>
+    <input type="range" id="duty" min="10" max="90" step="1" value="50">
+  </div>
+  <div class="row">
+    <label>角度 <span class="val" id="angleVal">0°</span></label>
+    <input type="range" id="angle" min="0" max="180" step="1" value="0">
+  </div>
+  <div class="row">
+    <label>自動アニメーション速度 <span class="val" id="speedVal">停止</span></label>
+    <input type="range" id="speed" min="-30" max="30" step="1" value="0">
+  </div>
+  <div class="row">
+    <label>手動位相(手でスライドしても動きます) <span class="val" id="phaseVal">0px</span></label>
+    <input type="range" id="phase" min="0" max="100" step="1" value="0">
+  </div>
+  <div class="row">
+    <label>線の色</label>
+    <div class="colorrow">
+      <div class="swatch active" data-color="#000000" style="background:#000"></div>
+      <div class="swatch" data-color="#ffffff" style="background:#fff"></div>
+      <div class="swatch" data-color="#d9b877" style="background:#d9b877"></div>
+      <div class="swatch" data-color="#c0392b" style="background:#c0392b"></div>
+    </div>
+  </div>
+  <div class="row btnrow">
+    <div class="chip" id="halfShiftBtn">半ピッチ反転</div>
+    <div class="chip" id="resetBtn">リセット</div>
+    <div class="chip" id="closePanelBtn">閉じる</div>
+  </div>
+</div>
+
+<script>
+(function () {
+  const video = document.getElementById('video');
+  const canvas = document.getElementById('canvas');
+  const ctx = canvas.getContext('2d');
+  const permBox = document.getElementById('permBox');
+  const startBtn = document.getElementById('startBtn');
+  const permMsg = document.getElementById('permMsg');
+  const hint = document.getElementById('hint');
+  const panel = document.getElementById('panel');
+  const gearBtn = document.getElementById('gearBtn');
+  const flipBtn = document.getElementById('flipBtn');
+  const closePanelBtn = document.getElementById('closePanelBtn');
+  const pauseBtn = document.getElementById('pauseBtn');
+  const playbar = document.getElementById('playbar');
+  const resetBtn = document.getElementById('resetBtn');
+  const halfShiftBtn = document.getElementById('halfShiftBtn');
+
+  const state = {
+    pitch: 16,
+    duty: 0.5,
+    angle: 0,
+    speed: 0,      // px/sec, 自動位相移動
+    phase: 0,
+    color: '#000000',
+    paused: false,
+    facingMode: 'environment',
+    stream: null
+  };
+
+  const sliders = {
+    pitch: document.getElementById('pitch'),
+    duty: document.getElementById('duty'),
+    angle: document.getElementById('angle'),
+    speed: document.getElementById('speed'),
+    phase: document.getElementById('phase'),
+  };
+  const vals = {
+    pitch: document.getElementById('pitchVal'),
+    duty: document.getElementById('dutyVal'),
+    angle: document.getElementById('angleVal'),
+    speed: document.getElementById('speedVal'),
+    phase: document.getElementById('phaseVal'),
+  };
+
+  function syncPhaseSliderRange() {
+    sliders.phase.max = Math.max(10, Math.round(state.pitch));
+  }
+
+  function updateLabels() {
+    vals.pitch.textContent = state.pitch + 'px';
+    vals.duty.textContent = Math.round(state.duty * 100) + '%';
+    vals.angle.textContent = state.angle + '°';
+    vals.speed.textContent = state.speed === 0 ? '停止' : (state.speed > 0 ? '→ ' : '← ') + Math.abs(state.speed);
+    vals.phase.textContent = Math.round(state.phase) + 'px';
+  }
+
+  sliders.pitch.addEventListener('input', e => {
+    state.pitch = parseFloat(e.target.value);
+    syncPhaseSliderRange();
+    updateLabels();
+  });
+  sliders.duty.addEventListener('input', e => {
+    state.duty = parseFloat(e.target.value) / 100;
+    updateLabels();
+  });
+  sliders.angle.addEventListener('input', e => {
+    state.angle = parseFloat(e.target.value);
+    updateLabels();
+  });
+  sliders.speed.addEventListener('input', e => {
+    state.speed = parseFloat(e.target.value);
+    updateLabels();
+  });
+  sliders.phase.addEventListener('input', e => {
+    state.phase = parseFloat(e.target.value);
+    updateLabels();
+  });
+
+  document.querySelectorAll('.swatch').forEach(sw => {
+    sw.addEventListener('click', () => {
+      document.querySelectorAll('.swatch').forEach(s => s.classList.remove('active'));
+      sw.classList.add('active');
+      state.color = sw.dataset.color;
+    });
+  });
+
+  resetBtn.addEventListener('click', () => {
+    state.pitch = 16; state.duty = 0.5; state.angle = 0; state.speed = 0; state.phase = 0;
+    sliders.pitch.value = 16; sliders.duty.value = 50; sliders.angle.value = 0;
+    sliders.speed.value = 0; syncPhaseSliderRange(); sliders.phase.value = 0;
+    updateLabels();
+  });
+  halfShiftBtn.addEventListener('click', () => {
+    state.phase = (state.phase + state.pitch / 2) % state.pitch;
+    sliders.phase.value = state.phase;
+    updateLabels();
+  });
+
+  gearBtn.addEventListener('click', () => panel.classList.add('open'));
+  closePanelBtn.addEventListener('click', () => panel.classList.remove('open'));
+
+  pauseBtn.addEventListener('click', () => {
+    state.paused = !state.paused;
+    pauseBtn.textContent = state.paused ? '▶ 再生' : '⏸ 一時停止';
+  });
+
+  // 画面を指でドラッグすると位相が動く(実物のシートを滑らせる感覚)
+  let dragging = false, lastX = 0;
+  const stage = document.getElementById('stage');
+  stage.addEventListener('pointerdown', e => { dragging = true; lastX = e.clientX; });
+  window.addEventListener('pointermove', e => {
+    if (!dragging) return;
+    const dx = e.clientX - lastX;
+    lastX = e.clientX;
+    state.phase = ((state.phase + dx) % state.pitch + state.pitch) % state.pitch;
+    sliders.phase.value = state.phase;
+    updateLabels();
+    hint.style.opacity = '0';
+  });
+  window.addEventListener('pointerup', () => dragging = false);
+
+  // カメラ起動
+  async function startCamera(facingMode) {
+    if (state.stream) {
+      state.stream.getTracks().forEach(t => t.stop());
+    }
+    const constraints = {
+      audio: false,
+      video: {
+        facingMode: { ideal: facingMode },
+        width: { ideal: 1920 },
+        height: { ideal: 1080 }
+      }
+    };
+    const stream = await navigator.mediaDevices.getUserMedia(constraints);
+    state.stream = stream;
+    video.srcObject = stream;
+    await video.play();
+  }
+
+  flipBtn.addEventListener('click', async () => {
+    state.facingMode = state.facingMode === 'environment' ? 'user' : 'environment';
+    try { await startCamera(state.facingMode); } catch (e) { /* ignore */ }
+  });
+
+  startBtn.addEventListener('click', async () => {
+    permMsg.textContent = '起動中…';
+    try {
+      await startCamera(state.facingMode);
+      permBox.classList.add('hidden');
+      setTimeout(() => { hint.style.opacity = '0'; }, 5000);
+      resizeCanvas();
+      requestAnimationFrame(loop);
+    } catch (err) {
+      permMsg.textContent = 'カメラを開始できませんでした。ブラウザの設定でカメラ許可を確認するか、https(またはlocalhost)で開いているかご確認ください。 (' + err.message + ')';
+    }
+  });
+
+  function resizeCanvas() {
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    canvas.width = Math.round(window.innerWidth * dpr);
+    canvas.height = Math.round(window.innerHeight * dpr);
+  }
+  window.addEventListener('resize', resizeCanvas);
+
+  function drawVideoCover() {
+    const vw = video.videoWidth, vh = video.videoHeight;
+    if (!vw || !vh) return;
+    const cw = canvas.width, ch = canvas.height;
+    const scale = Math.max(cw / vw, ch / vh);
+    const dw = vw * scale, dh = vh * scale;
+    const dx = (cw - dw) / 2, dy = (ch - dh) / 2;
+    ctx.drawImage(video, dx, dy, dw, dh);
+  }
+
+  function drawStripes() {
+    const w = canvas.width, h = canvas.height;
+    const diag = Math.sqrt(w * w + h * h);
+    ctx.save();
+    ctx.translate(w / 2, h / 2);
+    ctx.rotate(state.angle * Math.PI / 180);
+    ctx.fillStyle = state.color;
+    const pitch = state.pitch * (Math.min(window.devicePixelRatio || 1, 2));
+    const stripeW = pitch * state.duty;
+    const phase = (state.phase * (Math.min(window.devicePixelRatio || 1, 2))) % pitch;
+    let x = -diag - phase;
+    while (x < diag) {
+      ctx.fillRect(x, -diag, stripeW, diag * 2);
+      x += pitch;
+    }
+    ctx.restore();
+  }
+
+  let lastT = performance.now();
+  function loop(t) {
+    const dt = (t - lastT) / 1000;
+    lastT = t;
+    if (!state.paused) {
+      drawVideoCover();
+      state.phase = ((state.phase + state.speed * dt) % state.pitch + state.pitch) % state.pitch;
+      sliders.phase.value = state.phase;
+      drawStripes();
+    }
+    requestAnimationFrame(loop);
+  }
+
+  syncPhaseSliderRange();
+  updateLabels();
+})();
+</script>
+</body>
+</html>
 
